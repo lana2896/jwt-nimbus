@@ -1,20 +1,28 @@
 package vn.iotstar.services;
 
+import java.text.ParseException;
+import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
-
-import javax.crypto.SecretKey;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.MACSigner;
+import com.nimbusds.jose.crypto.MACVerifier;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+
+import vn.iotstar.exception.JwtExpiredException;
+import vn.iotstar.exception.JwtInvalidException;
+import vn.iotstar.exception.JwtSignatureException;
 
 @Service
 public class JwtService {
@@ -26,11 +34,11 @@ public class JwtService {
     private long jwtExpiration;
 
     public String extractUsername(String token) {
-        return extractClaim(token, Claims::getSubject);
+        return extractClaim(token, JWTClaimsSet::getSubject);
     }
 
-    public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
-        final Claims claims = extractAllClaims(token);
+    public <T> T extractClaim(String token, Function<JWTClaimsSet, T> claimsResolver) {
+        final JWTClaimsSet claims = extractAllClaims(token);
         return claimsResolver.apply(claims);
     }
 
@@ -48,13 +56,25 @@ public class JwtService {
 
     private String buildToken(Map<String, Object> extraClaims, UserDetails userDetails, long expiration) {
         long now = System.currentTimeMillis();
-        return Jwts.builder()
-                .claims(extraClaims)
+
+        JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder();
+        extraClaims.forEach(builder::claim);
+        JWTClaimsSet claimsSet = builder
                 .subject(userDetails.getUsername())
-                .issuedAt(new Date(now))
-                .expiration(new Date(now + expiration))
-                .signWith(getSignInKey(), Jwts.SIG.HS256)
-                .compact();
+                .issueTime(new Date(now))
+                .expirationTime(new Date(now + expiration))
+                .jwtID(UUID.randomUUID().toString())
+                .build();
+
+        SignedJWT signedJWT = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claimsSet);
+
+        try {
+            signedJWT.sign(new MACSigner(getSignInKey()));
+        } catch (JOSEException e) {
+            throw new IllegalStateException("Cannot sign JWT", e);
+        }
+
+        return signedJWT.serialize();
     }
 
     public boolean isTokenValid(String token, UserDetails userDetails) {
@@ -67,19 +87,43 @@ public class JwtService {
     }
 
     private Date extractExpiration(String token) {
-        return extractClaim(token, Claims::getExpiration);
+        return extractClaim(token, JWTClaimsSet::getExpirationTime);
     }
 
-    private Claims extractAllClaims(String token) {
-        return Jwts.parser()
-                .verifyWith(getSignInKey())
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
+    private JWTClaimsSet extractAllClaims(String token) {
+        SignedJWT signedJWT;
+
+        try {
+            signedJWT = SignedJWT.parse(token);
+        } catch (ParseException e) {
+            throw new JwtInvalidException("Malformed JWT", e);
+        }
+
+        try {
+            boolean validAlgorithm = JWSAlgorithm.HS256.equals(signedJWT.getHeader().getAlgorithm());
+
+            if (!validAlgorithm || !signedJWT.verify(new MACVerifier(getSignInKey()))) {
+                throw new JwtSignatureException("JWT signature does not match locally computed signature");
+            }
+
+            JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
+            Date expiration = claims.getExpirationTime();
+
+            if (expiration == null) {
+                throw new JwtInvalidException("JWT has no expiration time");
+            }
+
+            if (expiration.before(new Date())) {
+                throw new JwtExpiredException("JWT expired at " + expiration);
+            }
+
+            return claims;
+        } catch (JOSEException | ParseException e) {
+            throw new JwtInvalidException("Invalid JWT", e);
+        }
     }
 
-    private SecretKey getSignInKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
-        return Keys.hmacShaKeyFor(keyBytes);
+    private byte[] getSignInKey() {
+        return Base64.getDecoder().decode(secretKey);
     }
 }

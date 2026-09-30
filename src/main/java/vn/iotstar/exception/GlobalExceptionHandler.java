@@ -10,9 +10,6 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import io.jsonwebtoken.ExpiredJwtException;
-import io.jsonwebtoken.JwtException;
-import io.jsonwebtoken.security.SignatureException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -34,13 +31,13 @@ public class GlobalExceptionHandler {
         } else if (exception instanceof AccessDeniedException) {
             errorDetail = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, exception.getMessage());
             errorDetail.setProperty("description", "You are not authorized to access this resource");
-        } else if (exception instanceof SignatureException) {
+        } else if (exception instanceof JwtSignatureException) {
             errorDetail = ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, exception.getMessage());
             errorDetail.setProperty("description", "The JWT signature is invalid");
-        } else if (exception instanceof ExpiredJwtException) {
+        } else if (exception instanceof JwtExpiredException) {
             errorDetail = ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, exception.getMessage());
             errorDetail.setProperty("description", "The JWT token has expired");
-        } else if (exception instanceof JwtException) {
+        } else if (exception instanceof JwtInvalidException) {
             errorDetail = ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, exception.getMessage());
             errorDetail.setProperty("description", "The JWT token is invalid");
         } else if (exception instanceof DataIntegrityViolationException) {
